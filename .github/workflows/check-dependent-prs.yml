@@ -1,0 +1,101 @@
+name: Check PR dependencies on merge
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  check_dependencies:
+    if: github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Check PR dependencies
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // Function to extract PR numbers from text like "Depends on #123" or "#23"
+            function extractPRNumbers(text) {
+              const regex = /(?:Depends on\s*)?#(\d+)/gi;
+              let matches;
+              let prNumbers = new Set();
+              while ((matches = regex.exec(text)) !== null) {
+                prNumbers.add(parseInt(matches[1]));
+              }
+              return Array.from(prNumbers);
+            }
+
+            // Get all open draft PRs
+            const draftPRs = await github.rest.pulls.list({
+              owner,
+              repo,
+              state: 'open',
+              per_page: 100,
+            });
+
+            // Filter only draft PRs
+            const draftPRsFiltered = draftPRs.data.filter(pr => pr.draft === true);
+
+            // Helper to check if a PR is merged or closed
+            async function isPRMergedOrClosed(prNumber) {
+              try {
+                const pr = await github.rest.pulls.get({
+                  owner,
+                  repo,
+                  pull_number: prNumber,
+                });
+                return pr.data.merged || pr.data.state === 'closed';
+              } catch (error) {
+                // If the PR doesn't exist or some error, consider dependency unmet
+                return false;
+              }
+            }
+
+            for (const pr of draftPRsFiltered) {
+              const body = pr.body || '';
+              const dependencies = extractPRNumbers(body);
+
+              if (dependencies.length === 0) {
+                // No dependencies, skip
+                continue;
+              }
+
+              // Check all dependencies statuses
+              const checks = await Promise.all(dependencies.map(isPRMergedOrClosed));
+              const allMet = checks.every(status => status === true);
+
+              if (allMet) {
+                // Post a comment that dependencies are met
+                const commentBody = `:white_check_mark: All dependencies for this draft PR are now merged or closed. You can proceed when ready.`;
+
+                // Avoid duplicate comments by checking existing comments first
+                const comments = await github.rest.issues.listComments({
+                  owner,
+                  repo,
+                  issue_number: pr.number,
+                });
+
+                const alreadyCommented = comments.data.some(c =>
+                  c.body === commentBody
+                );
+
+                if (!alreadyCommented) {
+                  await github.rest.issues.createComment({
+                    owner,
+                    repo,
+                    issue_number: pr.number,
+                    body: commentBody,
+                  });
+                  console.log(`Commented on draft PR #${pr.number}`);
+                } else {
+                  console.log(`Comment already exists on draft PR #${pr.number}`);
+                }
+              }
+            }
+
