@@ -1,1 +1,2 @@
-# other readme content
+# github actions
+- check-dependent-prs
