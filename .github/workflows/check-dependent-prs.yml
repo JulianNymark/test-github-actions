@@ -20,9 +20,8 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
 
-            // Function to extract PR numbers from text like "Depends on #123" or "#23"
             function extractPRNumbers(text) {
-              const regex = /(?:Depends on\s*)?#(\d+)/gi;
+              const regex = /#(\d+)/g;
               let matches;
               let prNumbers = new Set();
               while ((matches = regex.exec(text)) !== null) {
@@ -31,7 +30,8 @@ jobs:
               return Array.from(prNumbers);
             }
 
-            // Get all open draft PRs
+            console.log('Fetching open draft PRs...');
+
             const draftPRs = await github.rest.pulls.list({
               owner,
               repo,
@@ -39,10 +39,9 @@ jobs:
               per_page: 100,
             });
 
-            // Filter only draft PRs
             const draftPRsFiltered = draftPRs.data.filter(pr => pr.draft === true);
+            console.log(`Found ${draftPRsFiltered.length} draft PR(s).`);
 
-            // Helper to check if a PR is merged or closed
             async function isPRMergedOrClosed(prNumber) {
               try {
                 const pr = await github.rest.pulls.get({
@@ -52,38 +51,39 @@ jobs:
                 });
                 return pr.data.merged || pr.data.state === 'closed';
               } catch (error) {
-                // If the PR doesn't exist or some error, consider dependency unmet
+                console.log(`Error fetching PR #${prNumber}: ${error.message}`);
                 return false;
               }
             }
 
             for (const pr of draftPRsFiltered) {
+              console.log(`Checking draft PR #${pr.number} - ${pr.title}`);
+
               const body = pr.body || '';
               const dependencies = extractPRNumbers(body);
 
               if (dependencies.length === 0) {
-                // No dependencies, skip
+                console.log(`No dependencies found for PR #${pr.number}, skipping.`);
                 continue;
               }
 
-              // Check all dependencies statuses
+              console.log(`Dependencies for PR #${pr.number}: ${dependencies.join(', ')}`);
+
               const checks = await Promise.all(dependencies.map(isPRMergedOrClosed));
               const allMet = checks.every(status => status === true);
 
               if (allMet) {
-                // Post a comment that dependencies are met
+                console.log(`All dependencies met for PR #${pr.number}.`);
+
                 const commentBody = `:white_check_mark: All dependencies for this draft PR are now merged or closed. You can proceed when ready.`;
 
-                // Avoid duplicate comments by checking existing comments first
                 const comments = await github.rest.issues.listComments({
                   owner,
                   repo,
                   issue_number: pr.number,
                 });
 
-                const alreadyCommented = comments.data.some(c =>
-                  c.body === commentBody
-                );
+                const alreadyCommented = comments.data.some(c => c.body === commentBody);
 
                 if (!alreadyCommented) {
                   await github.rest.issues.createComment({
@@ -92,10 +92,14 @@ jobs:
                     issue_number: pr.number,
                     body: commentBody,
                   });
-                  console.log(`Commented on draft PR #${pr.number}`);
+                  console.log(`Comment posted on draft PR #${pr.number}.`);
                 } else {
-                  console.log(`Comment already exists on draft PR #${pr.number}`);
+                  console.log(`Comment already exists on draft PR #${pr.number}, not posting again.`);
                 }
+              } else {
+                console.log(`Not all dependencies are met for PR #${pr.number}, skipping comment.`);
               }
             }
+
+            console.log('Dependency check completed.');
 
